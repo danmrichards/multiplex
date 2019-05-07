@@ -56,9 +56,9 @@ Usage of ./bin/client-linux-amd64:
 ```bash
 Usage of ./bin/server-linux-amd64:
   -cert string
-    	Path to the SSL certificate for the server (default "../ssl/server.crt")
+    	Path to the SSL certificate for the server (default "ssl/server.crt")
   -key string
-    	Path to the SSL private key for the server (default "../ssl/server.key")
+    	Path to the SSL private key for the server (default "ssl/server.key")
   -port string
     	The port on which to serve (default "8080")
 ```
