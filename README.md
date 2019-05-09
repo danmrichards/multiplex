@@ -31,8 +31,17 @@ $ openssl req \
     -keyout ssl/server.key \
     -out ssl/server.crt \
     -days 3650 \
-    -subj "/C=GB/ST=Bournemouth/L=Bournemouth/O=FooBar/OU=Turbo Encabulator/CN=*"
+    -subj "/C=GB/ST=Bournemouth/L=Bournemouth/O=FooBar/OU=Turbo Encabulator/CN=foobar.com"
 ```
+
+### Common Name
+You may have noticed that we set the common name of the SSL certificate generated
+above to foobar.com. The reason for this is to illustrate how an SSL certificate
+generated for a specific FQDN (as it would be in real life) can be used for
+communication via an IP address.
+
+What this means is that we can use a certificate for foobar.com, but the client
+actually makes requests to 127.0.0.1/localhost.
 
 Build the binaries:
 ```bash

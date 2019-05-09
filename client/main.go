@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -10,7 +11,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
+	"github.com/danmrichards/multiplex/client/host"
 	"golang.org/x/net/http2"
 )
 
@@ -59,6 +62,19 @@ func main() {
 		log.Fatalln("could not load x509 key pair:", err)
 	}
 
+	// We always make the requests to foobar.com as this is the FQDN that has
+	// been used in the SSL certificate the server is using.
+	svr := net.JoinHostPort("foobar.com", port)
+
+	// Store the actual IP of the server in a context which we'll add to the
+	// request itself.
+	svrCtx := host.NewContext(context.Background(), server)
+
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
 	// Use a custom HTTP transport with the extended root CA pool and the
 	// key/pair we generated above. The key pair will be presented to the other
 	// side of the connection and verified. We could avoid this if we had a
@@ -68,6 +84,30 @@ func main() {
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{xkp},
 			RootCAs:      crtPool,
+		},
+
+		// We need to use a custom dial func due to the way in which Go
+		// implements SNI (server name identification). Typically you could
+		// just override the "Host" header of the request with the FQDN that is
+		// valid for the SSL certificate. However in Go this results in the SSL
+		// verification failing during the handshake.
+		//
+		// Hence we always make the requests to the FQDN valid for the SSL
+		// certificate. We embed the actual server IP address in the request
+		// context and redirect connections accordingly if the value is present.
+		//
+		// See: https://github.com/golang/go/issues/22704
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if h, ok := host.FromContext(ctx); ok {
+				_, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+
+				addr = net.JoinHostPort(h, port)
+			}
+
+			return dialer.DialContext(ctx, network, addr)
 		},
 	}
 
@@ -81,9 +121,9 @@ func main() {
 		Transport: tr,
 	}
 
-	svr := net.JoinHostPort(server, port)
-
-	res, err := request(client, fmt.Sprintf(pingURL, protocolHTTP, svr), nil)
+	res, err := request(
+		svrCtx, client, fmt.Sprintf(pingURL, protocolHTTP, svr), nil,
+	)
 	if err != nil {
 		log.Fatalln("ping HTTP request:", err)
 	}
@@ -96,7 +136,9 @@ func main() {
 	fmt.Println(string(b))
 
 	fmt.Println()
-	res, err = request(client, fmt.Sprintf(pingURL, protocolHTTPS, svr), nil)
+	res, err = request(
+		svrCtx, client, fmt.Sprintf(pingURL, protocolHTTPS, svr), nil,
+	)
 	if err != nil {
 		log.Fatalln("ping HTTPS request:", err)
 	}
@@ -111,7 +153,9 @@ func main() {
 	fmt.Println()
 	fmt.Println("ping google just to prove the root certs still work")
 
-	res, err = request(client, "https://www.google.com", nil)
+	res, err = request(
+		context.Background(), client, "https://www.google.com", nil,
+	)
 	if err != nil {
 		log.Fatalln("google request:", err)
 	}
@@ -125,12 +169,13 @@ func main() {
 
 // request sends an HTTP request and returns an HTTP response for the given
 // server, uri, port and protocol.
-func request(client *http.Client, url string, body io.Reader) (*http.Response, error) {
+func request(ctx context.Context, client *http.Client, url string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, url, body)
 	if err != nil {
-		log.Fatalln("build request:", err)
+		return nil, err
 	}
+
 	log.Printf("request: protocol: %s url: %s", req.Proto, req.URL)
 
-	return client.Do(req)
+	return client.Do(req.WithContext(ctx))
 }
