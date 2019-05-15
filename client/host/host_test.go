@@ -15,7 +15,7 @@ func TestFromContext(t *testing.T) {
 		{
 			name: "valid",
 			cf: func() context.Context {
-				return main.NewContext(context.TODO(), "1.2.3.4")
+				return NewContext(context.TODO(), "1.2.3.4")
 			},
 			expHost: "1.2.3.4",
 			expOk:   true,
@@ -23,7 +23,7 @@ func TestFromContext(t *testing.T) {
 		{
 			name: "blank",
 			cf: func() context.Context {
-				return main.NewContext(context.TODO(), "")
+				return NewContext(context.TODO(), "")
 			},
 			expHost: "",
 			expOk:   true,
@@ -31,7 +31,7 @@ func TestFromContext(t *testing.T) {
 		{
 			name: "wrong type",
 			cf: func() context.Context {
-				return context.WithValue(context.TODO(), main.hostKey, 123)
+				return context.WithValue(context.TODO(), hostKey, 123)
 			},
 		},
 	}
@@ -39,7 +39,7 @@ func TestFromContext(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := c.cf()
 
-			h, ok := main.FromContext(ctx)
+			h, ok := FromContext(ctx)
 			if c.expOk != ok {
 				t.Fatalf("context value ok: expected %v got %v", c.expOk, ok)
 			}
