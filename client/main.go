@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -11,13 +10,14 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"time"
 
-	"github.com/danmrichards/multiplex/client/host"
 	"golang.org/x/net/http2"
 )
 
-var cert, key, server, port string
+var (
+	cert, key, server, port, serverName string
+	httpClient                          = http.Client{}
+)
 
 const (
 	protocolHTTP  = "http"
@@ -31,6 +31,7 @@ func main() {
 	flag.StringVar(&key, "key", "ssl/server.key", "Path to the SSL private key file for the server")
 	flag.StringVar(&server, "server", "localhost", "Server for the server to ping")
 	flag.StringVar(&port, "port", "8080", "The port on which to ping the server")
+	flag.StringVar(&serverName, "servername", "foobar.com", "The FQDN for which the SSL certificate is valid")
 
 	flag.Parse()
 
@@ -62,67 +63,18 @@ func main() {
 		log.Fatalln("could not load x509 key pair:", err)
 	}
 
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{xkp},
+		RootCAs:      crtPool,
+		ServerName:   serverName,
+	}
+
 	// We always make the requests to foobar.com as this is the FQDN that has
 	// been used in the SSL certificate the server is using.
-	svr := net.JoinHostPort("foobar.com", port)
+	svr := net.JoinHostPort(server, port)
 
-	// Store the actual IP of the server in a context which we'll add to the
-	// request itself.
-	svrCtx := host.NewContext(context.Background(), server)
-
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-
-	// Use a custom HTTP transport with the extended root CA pool and the
-	// key/pair we generated above. The key pair will be presented to the other
-	// side of the connection and verified. We could avoid this if we had a
-	// certificate from a root CA already trusted by the client and the server.
-	// Or if you want to live dangerously by disabling verification.
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{xkp},
-			RootCAs:      crtPool,
-		},
-
-		// We need to use a custom dial func due to the way in which Go
-		// implements SNI (server name identification). Typically you could
-		// just override the "Host" header of the request with the FQDN that is
-		// valid for the SSL certificate. However in Go this results in the SSL
-		// verification failing during the handshake.
-		//
-		// Hence we always make the requests to the FQDN valid for the SSL
-		// certificate. We embed the actual server IP address in the request
-		// context and redirect connections accordingly if the value is present.
-		//
-		// See: https://github.com/golang/go/issues/22704
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if h, ok := host.FromContext(ctx); ok {
-				_, port, err := net.SplitHostPort(addr)
-				if err != nil {
-					return nil, err
-				}
-
-				addr = net.JoinHostPort(h, port)
-			}
-
-			return dialer.DialContext(ctx, network, addr)
-		},
-	}
-
-	// Because we created a custom TLSClientConfig, we have to opt-in to HTTP/2.
-	// See https://github.com/golang/go/issues/14275
-	if err = http2.ConfigureTransport(tr); err != nil {
-		log.Fatalln("could not configure transport for HTTP/2:", err)
-	}
-
-	client := &http.Client{
-		Transport: tr,
-	}
-
-	res, err := request(
-		svrCtx, client, fmt.Sprintf(pingURL, protocolHTTP, svr), nil,
+	res, err := sniRequest(
+		tlsCfg, http.MethodGet, fmt.Sprintf(pingURL, protocolHTTP, svr), nil,
 	)
 	if err != nil {
 		log.Fatalln("ping HTTP request:", err)
@@ -136,8 +88,8 @@ func main() {
 	fmt.Println(string(b))
 
 	fmt.Println()
-	res, err = request(
-		svrCtx, client, fmt.Sprintf(pingURL, protocolHTTPS, svr), nil,
+	res, err = sniRequest(
+		tlsCfg, http.MethodGet, fmt.Sprintf(pingURL, protocolHTTPS, svr), nil,
 	)
 	if err != nil {
 		log.Fatalln("ping HTTPS request:", err)
@@ -153,9 +105,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("ping google just to prove the root certs still work")
 
-	res, err = request(
-		context.Background(), client, "https://www.google.com", nil,
-	)
+	res, err = request(http.MethodGet, "https://www.google.com", nil)
 	if err != nil {
 		log.Fatalln("google request:", err)
 	}
@@ -167,15 +117,35 @@ func main() {
 	fmt.Println("pinged google")
 }
 
-// request sends an HTTP request and returns an HTTP response for the given
-// server, uri, port and protocol.
-func request(ctx context.Context, client *http.Client, url string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, body)
+func sniRequest(tlsCfg *tls.Config, method, url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
-
+	req.Host = serverName
 	log.Printf("request: protocol: %s url: %s", req.Proto, req.URL)
 
-	return client.Do(req.WithContext(ctx))
+	tr := &http.Transport{
+		TLSClientConfig: tlsCfg,
+	}
+
+	// Because we created a custom TLSClientConfig, we have to opt-in to HTTP/2.
+	// See https://github.com/golang/go/issues/14275
+	if err = http2.ConfigureTransport(tr); err != nil {
+		log.Fatalln("could not configure transport for HTTP/2:", err)
+	}
+
+	httpClient.Transport = tr
+	return httpClient.Do(req)
+}
+
+func request(method, url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("request: protocol: %s url: %s", req.Proto, req.URL)
+
+	httpClient.Transport = http.DefaultTransport
+	return httpClient.Do(req)
 }
